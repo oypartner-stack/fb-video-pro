@@ -28,73 +28,87 @@ def clean_title(raw_title):
     title = re.sub(r"\s+", " ", title).strip()
     return title or raw_title
 
-def get_best_font():
-    """يختار أفضل خط عربي متاح على الجهاز"""
-    candidates = [
+def get_font():
+    """
+    يعيد مسار أفضل خط عربي متاح.
+    الأولوية: Amiri-Bold في المشروع ← fonts-hosny-amiri ← DejaVu
+    """
+    # 1) خط Amiri في نفس مجلد البوت (نضعه في المشروع مباشرة)
+    local = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Amiri-Bold.ttf")
+    if os.path.exists(local):
+        print(f"✅ Font: Amiri (local)")
+        return local
+
+    # 2) خط Amiri المثبّت عبر apt
+    for p in [
         "/usr/share/fonts/truetype/fonts-hosny-amiri/Amiri-Bold.ttf",
         "/usr/share/fonts/truetype/amiri/Amiri-Bold.ttf",
-        "/usr/share/fonts/truetype/kacst/KacstBook.ttf",
-        "/usr/share/fonts/truetype/kacst/KacstArt.ttf",
-        "/usr/share/fonts/truetype/arabeyes/ae_AlArabiya.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-    ]
-    for p in candidates:
+        "/usr/share/fonts/amiri/Amiri-Bold.ttf",
+    ]:
         if os.path.exists(p):
-            print(f"✅ Using font: {p}")
+            print(f"✅ Font: {p}")
             return p
-    return "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+
+    # 3) DejaVu احتياطي
+    dv = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+    print(f"⚠️ Using fallback font: DejaVu")
+    return dv
 
 def render_title_image(text, color_hex, video_w, video_h):
     """
-    يرسم PNG شفاف: شريط ملون + عنوان عربي كامل على عدة سطور
+    يرسم PNG شفاف: شريط ملون + عنوان عربي.
+    حجم الخط ثابت (38px على 1080px عرض) يتناسب مع عرض الفيديو.
     """
     from PIL import Image, ImageDraw, ImageFont
 
     # ── تحويل اللون ───────────────────────────────────────────
     hex_str   = color_hex.split("@")[0].replace("0x", "").replace("#", "")
     alpha_val = int(float(color_hex.split("@")[1]) * 255) if "@" in color_hex else 217
-    r_c = int(hex_str[0:2], 16)
-    g_c = int(hex_str[2:4], 16)
-    b_c = int(hex_str[4:6], 16)
-    bg_color  = (r_c, g_c, b_c, alpha_val)
+    bg_color  = (
+        int(hex_str[0:2], 16),
+        int(hex_str[2:4], 16),
+        int(hex_str[4:6], 16),
+        alpha_val
+    )
 
     # ── أبعاد ─────────────────────────────────────────────────
-    font_path = get_best_font()
-    font_size = int(video_h * 0.044)   # 4.4% من ارتفاع الفيديو
+    # حجم الخط: 38px على فيديو 1080px عرض، يتناسب مع أي عرض آخر
+    font_size = max(24, int(video_w * 0.0352))   # 38/1080 ≈ 0.0352
     pad_h     = int(video_w * 0.05)
-    pad_v     = int(video_h * 0.022)
+    pad_v     = int(video_h * 0.018)
     bar_w     = video_w - int(video_w * 0.08)
-    usable_w  = bar_w - 2 * pad_h
+    usable    = bar_w - 2 * pad_h
 
+    font_path = get_font()
     try:
         font = ImageFont.truetype(font_path, font_size)
     except:
         font = ImageFont.load_default()
 
+    # ── حساب عرض النص ─────────────────────────────────────────
+    dummy = Image.new("RGBA", (1, 1))
+    draw0 = ImageDraw.Draw(dummy)
+
     def get_tw(t):
-        dummy = Image.new("RGBA", (1, 1))
-        d = ImageDraw.Draw(dummy)
-        bb = d.textbbox((0, 0), t, font=font)
+        bb = draw0.textbbox((0, 0), t, font=font)
         return bb[2] - bb[0]
 
-    # ── تقسيم النص إلى سطور (بدون حد أقصى) ──────────────────
+    # ── تقسيم إلى سطور (بدون حد أقصى) ───────────────────────
     words = text.split()
     lines, current = [], []
-
     for word in words:
         test = " ".join(current + [word])
-        if get_tw(test) <= usable_w:
+        if get_tw(test) <= usable:
             current.append(word)
         else:
             if current:
                 lines.append(" ".join(current))
             current = [word]
-
     if current:
         lines.append(" ".join(current))
 
     # ── ارتفاع الشريط ─────────────────────────────────────────
-    line_h = int(font_size * 1.65)
+    line_h = int(font_size * 1.5)
     bar_h  = len(lines) * line_h + 2 * pad_v
 
     # ── رسم الصورة ────────────────────────────────────────────
@@ -106,20 +120,18 @@ def render_title_image(text, color_hex, video_w, video_h):
         tw = get_tw(line)
         tx = (bar_w - tw) // 2
         ty = pad_v + i * line_h
-        draw.text((tx + 2, ty + 2), line, font=font, fill=(0, 0, 0, 100))
-        draw.text((tx, ty),         line, font=font, fill=(255, 255, 255, 255))
+        draw.text((tx + 2, ty + 2), line, font=font, fill=(0, 0, 0, 110))
+        draw.text((tx,     ty),     line, font=font, fill=(255, 255, 255, 255))
 
     out_png = "/tmp/title_overlay.png"
     img.save(out_png, "PNG")
 
     bar_x = (video_w - bar_w) // 2
     bar_y = video_h - bar_h - int(video_h * 0.16)
-
     return out_png, bar_x, bar_y
 
 def add_title_overlay(main, title, color, out, w, h):
     print("✍️ إضافة العنوان على الفيديو...")
-
     clean = clean_title(title)
     print(f"   العنوان: {clean}")
 
@@ -145,7 +157,6 @@ def add_title_overlay(main, title, color, out, w, h):
         f"colorchannelmixer=aa='{alpha_full}'[ovr];"
         f"[0:v][ovr]overlay=x={bar_x}:y={bar_y}[v]"
     )
-
     result = subprocess.run(
         ["ffmpeg", "-y", "-i", main, "-loop", "1", "-i", png,
          "-filter_complex", fc,
@@ -170,7 +181,6 @@ def add_title_overlay(main, title, color, out, w, h):
              "-preset", "fast", "-shortest", out],
             capture_output=True, text=True, timeout=600
         )
-
     return os.path.exists(out)
 
 def apply_green_screen(main, gs, out, w, h, dur):
