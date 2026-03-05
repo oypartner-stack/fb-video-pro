@@ -31,25 +31,15 @@ def clean_title(raw_title):
 def get_font():
     """
     يعيد مسار أفضل خط عربي متاح.
-    الأولوية: Amiri-Bold في المشروع ← fonts-hosny-amiri ← DejaVu
+    الأولوية: Montserrat-Arabic في المشروع ← DejaVu
     """
-    # 1) خط Amiri في نفس مجلد البوت (نضعه في المشروع مباشرة)
-    local = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Amiri-Bold.ttf")
+    # 1) خط Montserrat-Arabic في نفس مجلد البوت
+    local = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Montserrat-Arabic-Bold.ttf")
     if os.path.exists(local):
-        print(f"✅ Font: Amiri (local)")
+        print(f"✅ Font: Montserrat-Arabic-Bold (local)")
         return local
 
-    # 2) خط Amiri المثبّت عبر apt
-    for p in [
-        "/usr/share/fonts/truetype/fonts-hosny-amiri/Amiri-Bold.ttf",
-        "/usr/share/fonts/truetype/amiri/Amiri-Bold.ttf",
-        "/usr/share/fonts/amiri/Amiri-Bold.ttf",
-    ]:
-        if os.path.exists(p):
-            print(f"✅ Font: {p}")
-            return p
-
-    # 3) DejaVu احتياطي
+    # 2) DejaVu احتياطي
     dv = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
     print(f"⚠️ Using fallback font: DejaVu")
     return dv
