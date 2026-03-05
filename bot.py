@@ -63,7 +63,7 @@ def render_title_image(text, color_hex, video_w, video_h):
 
     # ── أبعاد ─────────────────────────────────────────────────
     # حجم الخط: 38px على فيديو 1080px عرض، يتناسب مع أي عرض آخر
-    font_size = max(24, int(video_w * 0.0352))   # 38/1080 ≈ 0.0352
+    font_size = max(20, int(video_w * 0.0352))   # 38/1080 ≈ 0.0352
     pad_h     = int(video_w * 0.05)
     pad_v     = int(video_h * 0.018)
     bar_w     = video_w - int(video_w * 0.08)
