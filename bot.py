@@ -10,9 +10,7 @@ cloudinary.config(
     api_secret = os.environ["CLOUDINARY_API_SECRET"],
 )
 
-# ─────────────────────────────────────────────────────────────
-#  خط DejaVu Bold — موجود دائماً في Ubuntu بدون تحميل
-# ─────────────────────────────────────────────────────────────
+# خط DejaVu Bold — موجود دائماً في Ubuntu بدون تحميل
 FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 
 def load_config():
@@ -33,32 +31,10 @@ def clean_title(raw_title):
     title = re.sub(r"\s+", " ", title).strip()
     return title or raw_title
 
-def ensure_deps():
-    """تثبيت arabic-reshaper و python-bidi إذا لم تكن موجودة"""
-    try:
-        import arabic_reshaper
-        from bidi.algorithm import get_display
-    except ImportError:
-        subprocess.run(
-            ["pip", "install", "arabic-reshaper", "python-bidi", "--quiet"],
-            timeout=60
-        )
-
-def fix_arabic(text):
-    """تصحيح اتصال الحروف العربية واتجاه النص"""
-    try:
-        import arabic_reshaper
-        from bidi.algorithm import get_display
-        reshaped = arabic_reshaper.reshape(text)
-        return get_display(reshaped)
-    except:
-        # إذا لم تكن المكتبة متاحة، نعيد النص كما هو
-        return text
-
 def render_title_image(text, color_hex, video_w, video_h):
     """
-    يرسم PNG شفاف: شريط ملون + عنوان عربي صحيح بخط DejaVu Bold
-    يعيد: (مسار PNG, bar_x, bar_y)
+    يرسم PNG شفاف: شريط ملون + عنوان عربي صحيح
+    بدون أي معالجة للنص — DejaVu يتعامل مع العربية مباشرة
     """
     from PIL import Image, ImageDraw, ImageFont
 
@@ -84,66 +60,55 @@ def render_title_image(text, color_hex, video_w, video_h):
         font = ImageFont.load_default()
 
     # ── دالة حساب عرض النص ────────────────────────────────────
-    def text_width(t):
+    def get_tw(t):
         dummy = Image.new("RGBA", (1, 1))
         d = ImageDraw.Draw(dummy)
         bb = d.textbbox((0, 0), t, font=font)
         return bb[2] - bb[0]
 
-    # ── تصحيح العربية ─────────────────────────────────────────
-    fixed_text = fix_arabic(text)
-
-    # ── تقسيم إلى سطرين بناءً على العرض الفعلي ───────────────
-    words = text.split()           # نقسّم النص الأصلي بالكلمات
-    lines_raw = []
+    # ── تقسيم النص إلى سطرين بناءً على العرض الفعلي ──────────
+    words = text.split()
+    lines = []
     current = []
 
     for i, word in enumerate(words):
         test = " ".join(current + [word])
-        fixed_test = fix_arabic(test)
-        if text_width(fixed_test) <= usable_w:
+        if get_tw(test) <= usable_w:
             current.append(word)
         else:
             if current:
-                lines_raw.append(" ".join(current))
-            # السطر الثاني = باقي الكلمات
-            remaining = " ".join(words[i:])
-            fixed_remaining = fix_arabic(remaining)
-            # قطّع إذا تجاوز العرض
-            if text_width(fixed_remaining) > usable_w:
-                cut_words = []
-                for w2 in words[i:]:
-                    test2 = " ".join(cut_words + [w2])
-                    if text_width(fix_arabic(test2)) <= usable_w:
-                        cut_words.append(w2)
+                lines.append(" ".join(current))
+            # السطر الثاني = باقي الكلمات (قطّع إذا طال)
+            remaining_words = words[i:]
+            remaining = " ".join(remaining_words)
+            if get_tw(remaining) > usable_w:
+                cut = []
+                for w2 in remaining_words:
+                    if get_tw(" ".join(cut + [w2])) <= usable_w:
+                        cut.append(w2)
                     else:
                         break
-                remaining = " ".join(cut_words) if cut_words else words[i]
-            lines_raw.append(remaining)
+                remaining = " ".join(cut) if cut else word
+            lines.append(remaining)
             current = []
             break
 
     if current:
-        lines_raw.append(" ".join(current))
+        lines.append(" ".join(current))
 
-    lines_raw  = lines_raw[:2]
-    lines_bidi = [fix_arabic(l) for l in lines_raw]
+    lines = lines[:2]
 
     # ── ارتفاع الشريط ─────────────────────────────────────────
     line_h = int(font_size * 1.6)
-    bar_h  = len(lines_bidi) * line_h + 2 * pad_v
+    bar_h  = len(lines) * line_h + 2 * pad_v
 
     # ── رسم الصورة ────────────────────────────────────────────
     img  = Image.new("RGBA", (bar_w, bar_h), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
-
-    # الخلفية الملونة
     draw.rectangle([0, 0, bar_w - 1, bar_h - 1], fill=bg_color)
 
-    # كل سطر متمركز
-    for i, line in enumerate(lines_bidi):
-        bb = draw.textbbox((0, 0), line, font=font)
-        tw = bb[2] - bb[0]
+    for i, line in enumerate(lines):
+        tw = get_tw(line)
         tx = (bar_w - tw) // 2
         ty = pad_v + i * line_h
         # ظل خفيف
@@ -162,7 +127,6 @@ def render_title_image(text, color_hex, video_w, video_h):
 def add_title_overlay(main, title, color, out, w, h):
     print("✍️ إضافة العنوان على الفيديو...")
 
-    ensure_deps()
     clean = clean_title(title)
 
     try:
@@ -203,7 +167,6 @@ def add_title_overlay(main, title, color, out, w, h):
     if not os.path.exists(out):
         print(f"⚠️ ffmpeg fade error, trying simple overlay...")
         print(result.stderr[-600:])
-        # fallback بدون fade
         fc2 = (
             f"[1:v]format=yuva420p[ovr];"
             f"[0:v][ovr]overlay=x={bar_x}:y={bar_y}:enable='between(t,0,{show_end})'[v]"
