@@ -341,16 +341,48 @@ print(json.dumps(videos[:10]))
     print(f"  ✅ {len(videos)} فيديو من {source['name']}")
     return videos
 
+def scale_to_target(src, out, target_w=1080, target_h=1920):
+    """
+    يحجّم الفيديو ليملأ target_w × target_h بالكامل بدون أشرطة سوداء.
+    - إذا الفيديو أصغر  → Zoom In  (تكبير + قص الزائد من المنتصف)
+    - إذا الفيديو أكبر  → De-Zoom  (تصغير + قص الزائد من المنتصف)
+    النتيجة دائماً: الإطار ممتلئ 100% بدون أي فراغ.
+    """
+    print(f"📐 تحجيم الفيديو إلى {target_w}×{target_h} (Zoom/De-Zoom)...")
+    # scale: يكبّر/يصغّر حتى يغطي الإطار كاملاً (force_original_aspect_ratio=increase)
+    # crop:  يقص الزائد من المنتصف
+    vf = (
+        f"scale={target_w}:{target_h}:force_original_aspect_ratio=increase,"
+        f"crop={target_w}:{target_h},"
+        f"setsar=1"
+    )
+    r = subprocess.run(
+        ["ffmpeg", "-y", "-i", src,
+         "-vf", vf,
+         "-c:v", "libx264", "-c:a", "aac",
+         "-preset", "fast", out],
+        capture_output=True, text=True, timeout=600
+    )
+    if os.path.exists(out):
+        print(f"  ✅ تم التحجيم بنجاح")
+        return True
+    print(f"  ❌ فشل التحجيم: {r.stderr[-300:]}")
+    return False
+
 def cleanup(names):
     for name in names:
         for f in [f"/tmp/gs_{name}.mp4", f"/tmp/out_{name}.mp4",
                   f"/tmp/titled_{name}.mp4", f"/tmp/final_{name}.mp4",
                   f"/tmp/outro_{name}.mp4"]:
             if os.path.exists(f): os.remove(f)
-    for f in ["/tmp/main.mp4", "/tmp/concat.txt", "/tmp/sel.py", "/tmp/title_overlay.png"]:
+    for f in ["/tmp/main.mp4", "/tmp/main_scaled.mp4",
+              "/tmp/concat.txt", "/tmp/sel.py", "/tmp/title_overlay.png"]:
         if os.path.exists(f): os.remove(f)
 
 # ── التنفيذ الرئيسي ──────────────────────────────────────────
+TARGET_W = 1080
+TARGET_H = 1920
+
 print("🤖 بدء تشغيل البوت...")
 config = load_config()
 processed_ids = load_processed_ids()
@@ -366,11 +398,27 @@ if not new_video:
 else:
     print(f"🆕 {new_video['title'][:60]}")
     if not download_video(new_video["url"]): exit(1)
-    w, h, dur = get_video_info("/tmp/main.mp4")
+
+    # ── تحجيم الفيديو إلى المقاس المستهدف ─────────────────────
+    src_w, src_h, dur = get_video_info("/tmp/main.mp4")
+    print(f"  📏 المقاس الأصلي: {src_w}×{src_h}")
+
+    if src_w == TARGET_W and src_h == TARGET_H:
+        # مقاس مثالي، لا حاجة لتحجيم
+        main_ready = "/tmp/main.mp4"
+        print(f"  ✅ المقاس مطابق، لا حاجة لتحجيم")
+    else:
+        main_ready = "/tmp/main_scaled.mp4"
+        if not scale_to_target("/tmp/main.mp4", main_ready, TARGET_W, TARGET_H):
+            main_ready = "/tmp/main.mp4"   # fallback: استخدم الأصلي
+
+    # ── الأبعاد النهائية دائماً هي الهدف ──────────────────────
+    w, h = TARGET_W, TARGET_H
+
     names = []
     for pub in config["publishers"]:
         try:
-            final = process_for_publisher("/tmp/main.mp4", pub, w, h, dur, new_video["title"])
+            final = process_for_publisher(main_ready, pub, w, h, dur, new_video["title"])
             upload_and_send(final, new_video["title"], pub["name"])
             names.append(pub["name"])
         except Exception as e: print(f"❌ {pub['name']}: {e}")
