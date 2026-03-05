@@ -10,9 +10,6 @@ cloudinary.config(
     api_secret = os.environ["CLOUDINARY_API_SECRET"],
 )
 
-# خط DejaVu Bold — موجود دائماً في Ubuntu بدون تحميل
-FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-
 def load_config():
     with open("config.json", "r", encoding="utf-8") as f:
         return json.load(f)
@@ -26,80 +23,78 @@ def save_processed_ids(ids):
     with open(LAST_IDS_FILE, "w") as f: json.dump(ids[-100:], f)
 
 def clean_title(raw_title):
-    """يحذف اسم الصفحة من العنوان — يكون عادةً بعد | أو — في النهاية"""
+    """يحذف اسم الصفحة — يكون بعد | أو — في النهاية"""
     title = re.split(r'\s*[\|—–]\s*[^|—–]*$', raw_title)[0].strip()
     title = re.sub(r"\s+", " ", title).strip()
     return title or raw_title
 
+def get_best_font():
+    """يختار أفضل خط عربي متاح على الجهاز"""
+    candidates = [
+        "/usr/share/fonts/truetype/fonts-hosny-amiri/Amiri-Bold.ttf",
+        "/usr/share/fonts/truetype/amiri/Amiri-Bold.ttf",
+        "/usr/share/fonts/truetype/kacst/KacstBook.ttf",
+        "/usr/share/fonts/truetype/kacst/KacstArt.ttf",
+        "/usr/share/fonts/truetype/arabeyes/ae_AlArabiya.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    ]
+    for p in candidates:
+        if os.path.exists(p):
+            print(f"✅ Using font: {p}")
+            return p
+    return "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+
 def render_title_image(text, color_hex, video_w, video_h):
     """
-    يرسم PNG شفاف: شريط ملون + عنوان عربي صحيح
-    بدون أي معالجة للنص — DejaVu يتعامل مع العربية مباشرة
+    يرسم PNG شفاف: شريط ملون + عنوان عربي كامل على عدة سطور
     """
     from PIL import Image, ImageDraw, ImageFont
 
-    # ── تحويل اللون hex → RGBA ────────────────────────────────
+    # ── تحويل اللون ───────────────────────────────────────────
     hex_str   = color_hex.split("@")[0].replace("0x", "").replace("#", "")
     alpha_val = int(float(color_hex.split("@")[1]) * 255) if "@" in color_hex else 217
     r_c = int(hex_str[0:2], 16)
     g_c = int(hex_str[2:4], 16)
     b_c = int(hex_str[4:6], 16)
-    bg_color = (r_c, g_c, b_c, alpha_val)
+    bg_color  = (r_c, g_c, b_c, alpha_val)
 
     # ── أبعاد ─────────────────────────────────────────────────
-    font_size = int(video_h * 0.044)
+    font_path = get_best_font()
+    font_size = int(video_h * 0.044)   # 4.4% من ارتفاع الفيديو
     pad_h     = int(video_w * 0.05)
     pad_v     = int(video_h * 0.022)
     bar_w     = video_w - int(video_w * 0.08)
     usable_w  = bar_w - 2 * pad_h
 
-    # ── تحميل الخط ────────────────────────────────────────────
     try:
-        font = ImageFont.truetype(FONT_PATH, font_size)
+        font = ImageFont.truetype(font_path, font_size)
     except:
         font = ImageFont.load_default()
 
-    # ── دالة حساب عرض النص ────────────────────────────────────
     def get_tw(t):
         dummy = Image.new("RGBA", (1, 1))
         d = ImageDraw.Draw(dummy)
         bb = d.textbbox((0, 0), t, font=font)
         return bb[2] - bb[0]
 
-    # ── تقسيم النص إلى سطرين بناءً على العرض الفعلي ──────────
+    # ── تقسيم النص إلى سطور (بدون حد أقصى) ──────────────────
     words = text.split()
-    lines = []
-    current = []
+    lines, current = [], []
 
-    for i, word in enumerate(words):
+    for word in words:
         test = " ".join(current + [word])
         if get_tw(test) <= usable_w:
             current.append(word)
         else:
             if current:
                 lines.append(" ".join(current))
-            # السطر الثاني = باقي الكلمات (قطّع إذا طال)
-            remaining_words = words[i:]
-            remaining = " ".join(remaining_words)
-            if get_tw(remaining) > usable_w:
-                cut = []
-                for w2 in remaining_words:
-                    if get_tw(" ".join(cut + [w2])) <= usable_w:
-                        cut.append(w2)
-                    else:
-                        break
-                remaining = " ".join(cut) if cut else word
-            lines.append(remaining)
-            current = []
-            break
+            current = [word]
 
     if current:
         lines.append(" ".join(current))
 
-    lines = lines[:2]
-
     # ── ارتفاع الشريط ─────────────────────────────────────────
-    line_h = int(font_size * 1.6)
+    line_h = int(font_size * 1.65)
     bar_h  = len(lines) * line_h + 2 * pad_v
 
     # ── رسم الصورة ────────────────────────────────────────────
@@ -111,10 +106,8 @@ def render_title_image(text, color_hex, video_w, video_h):
         tw = get_tw(line)
         tx = (bar_w - tw) // 2
         ty = pad_v + i * line_h
-        # ظل خفيف
         draw.text((tx + 2, ty + 2), line, font=font, fill=(0, 0, 0, 100))
-        # النص الأبيض
-        draw.text((tx, ty), line, font=font, fill=(255, 255, 255, 255))
+        draw.text((tx, ty),         line, font=font, fill=(255, 255, 255, 255))
 
     out_png = "/tmp/title_overlay.png"
     img.save(out_png, "PNG")
@@ -128,6 +121,7 @@ def add_title_overlay(main, title, color, out, w, h):
     print("✍️ إضافة العنوان على الفيديو...")
 
     clean = clean_title(title)
+    print(f"   العنوان: {clean}")
 
     try:
         png, bar_x, bar_y = render_title_image(clean, color, w, h)
@@ -140,10 +134,9 @@ def add_title_overlay(main, title, color, out, w, h):
     show_end = 10.0
     fade_dur = 0.6
 
-    # ── fade in / fade out ────────────────────────────────────
     alpha_expr = (
         f"if(lt(t,{fade_dur}),t/{fade_dur},"
-        f"if(gt(t,{show_end - fade_dur}),({show_end}-t)/{fade_dur},1))"
+        f"if(gt(t,{show_end-fade_dur}),({show_end}-t)/{fade_dur},1))"
     )
     alpha_full = f"if(between(t,0,{show_end}),{alpha_expr},0)"
 
@@ -154,9 +147,7 @@ def add_title_overlay(main, title, color, out, w, h):
     )
 
     result = subprocess.run(
-        ["ffmpeg", "-y",
-         "-i", main,
-         "-loop", "1", "-i", png,
+        ["ffmpeg", "-y", "-i", main, "-loop", "1", "-i", png,
          "-filter_complex", fc,
          "-map", "[v]", "-map", "0:a",
          "-c:v", "libx264", "-c:a", "copy",
@@ -165,16 +156,14 @@ def add_title_overlay(main, title, color, out, w, h):
     )
 
     if not os.path.exists(out):
-        print(f"⚠️ ffmpeg fade error, trying simple overlay...")
-        print(result.stderr[-600:])
+        print("⚠️ fade failed, trying simple overlay...")
+        print(result.stderr[-400:])
         fc2 = (
             f"[1:v]format=yuva420p[ovr];"
             f"[0:v][ovr]overlay=x={bar_x}:y={bar_y}:enable='between(t,0,{show_end})'[v]"
         )
         subprocess.run(
-            ["ffmpeg", "-y",
-             "-i", main,
-             "-loop", "1", "-i", png,
+            ["ffmpeg", "-y", "-i", main, "-loop", "1", "-i", png,
              "-filter_complex", fc2,
              "-map", "[v]", "-map", "0:a",
              "-c:v", "libx264", "-c:a", "copy",
@@ -189,18 +178,18 @@ def apply_green_screen(main, gs, out, w, h, dur):
     r = subprocess.run(["ffmpeg","-y","-i",main,"-i",gs,"-filter_complex",
         f"[1:v]trim=duration={dur},scale={w}:{h},colorkey=0x00FF00:0.3:0.1,setpts=PTS-STARTPTS[g];[0:v][g]overlay=0:0[v]",
         "-map","[v]","-map","0:a","-c:v","libx264","-c:a","aac","-shortest","-preset","fast",out],
-        capture_output=True,text=True,timeout=600)
+        capture_output=True, text=True, timeout=600)
     if not os.path.exists(out):
         subprocess.run(["ffmpeg","-y","-i",main,"-i",gs,"-filter_complex",
             f"[1:v]trim=duration={dur},scale={w}:{h},colorkey=0x00FF00:0.3:0.1,setpts=PTS-STARTPTS[g];[0:v][g]overlay=0:0[v]",
             "-map","[v]","-c:v","libx264","-shortest","-preset","fast",out],
-            capture_output=True,text=True,timeout=600)
+            capture_output=True, text=True, timeout=600)
     return os.path.exists(out)
 
 def add_outro(main, outro, out, w, h):
     print("🎬 إضافة Outro...")
     probe = subprocess.run(["ffprobe","-v","quiet","-print_format","json",
-        "-show_streams","-show_format",outro],capture_output=True,text=True)
+        "-show_streams","-show_format",outro], capture_output=True, text=True)
     has_audio, dur = False, 5
     try:
         info = json.loads(probe.stdout)
@@ -215,13 +204,13 @@ def add_outro(main, outro, out, w, h):
         maps = ["-map","[ov]","-map","[oa]"]
     r = subprocess.run(["ffmpeg","-y","-i",main,"-i",outro,"-filter_complex",fc,
         *maps,"-c:v","libx264","-c:a","aac","-preset","fast",out],
-        capture_output=True,text=True,timeout=600)
+        capture_output=True, text=True, timeout=600)
     if not os.path.exists(out):
         with open("/tmp/concat.txt","w") as f:
             f.write(f"file '{main}'\nfile '{outro}'\n")
         subprocess.run(["ffmpeg","-y","-f","concat","-safe","0","-i","/tmp/concat.txt",
             "-vf",f"scale={w}:{h},setsar=1","-c:v","libx264","-c:a","aac","-preset","fast",out],
-            capture_output=True,text=True,timeout=600)
+            capture_output=True, text=True, timeout=600)
     return os.path.exists(out)
 
 def process_for_publisher(main_video, publisher, w, h, dur, title):
@@ -257,12 +246,12 @@ def upload_and_send(video_path, title, publisher_name):
 
 def download_from_cloudinary(public_id, out):
     url = f"https://res.cloudinary.com/{os.environ['CLOUDINARY_CLOUD_NAME']}/video/upload/{public_id}.mp4"
-    subprocess.run(["wget","-q","-O",out,url],timeout=60)
+    subprocess.run(["wget","-q","-O",out,url], timeout=60)
     return os.path.exists(out)
 
 def download_video(url):
     subprocess.run(["yt-dlp","--cookies",COOKIES_FILE,"-o","/tmp/main.mp4",
-        "--format","best[ext=mp4]/best","--no-warnings",url],timeout=300)
+        "--format","best[ext=mp4]/best","--no-warnings",url], timeout=300)
     return os.path.exists("/tmp/main.mp4")
 
 def get_video_info(path):
@@ -270,9 +259,9 @@ def get_video_info(path):
         "-show_streams","-show_format",path], capture_output=True, text=True)
     try:
         info = json.loads(probe.stdout)
-        vs = next((s for s in info["streams"] if s["codec_type"]=="video"),None)
-        return vs["width"],vs["height"],float(info["format"].get("duration",60))
-    except: return 1080,1920,60
+        vs = next((s for s in info["streams"] if s["codec_type"]=="video"), None)
+        return vs["width"], vs["height"], float(info["format"].get("duration",60))
+    except: return 1080, 1920, 60
 
 def get_videos_from_source(source):
     print(f"🔍 جلب من: {source['name']}")
