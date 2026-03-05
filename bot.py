@@ -23,179 +23,206 @@ def save_processed_ids(ids):
     with open(LAST_IDS_FILE, "w") as f: json.dump(ids[-100:], f)
 
 def clean_title(raw_title):
-    """
-    يأخذ العنوان الخام ويحذف اسم الصفحة — عادةً يكون بعد | أو - في النهاية
-    مثال: "خبر مهم | koooorama" → "خبر مهم"
-    """
-    # احذف كل ما بعد | أو — أو - إذا جاء في النهاية
-    title = re.split(r'\s*[\|—–-]\s*[^|—–-]*$', raw_title)[0].strip()
-    # نظّف الرموز التي تكسر ffmpeg
-    title = re.sub(r"[':,\\\[\]()]", " ", title)
+    """يحذف اسم الصفحة من العنوان — عادةً يكون بعد | أو - في النهاية"""
+    title = re.split(r'\s*[\|—–]\s*[^|—–]*$', raw_title)[0].strip()
     title = re.sub(r"\s+", " ", title).strip()
     return title or raw_title
 
-def download_cairo_font():
-    """تحميل خط Cairo العربي من Google Fonts"""
-    font_path = "/tmp/Cairo-Bold.ttf"
-    if os.path.exists(font_path):
-        return font_path
+def ensure_deps():
+    """تثبيت المكتبات المطلوبة لرسم النص العربي"""
     try:
-        url = "https://github.com/google/fonts/raw/main/ofl/cairo/Cairo%5Bslnt%2Cwght%5D.ttf"
-        r = subprocess.run(["wget", "-q", "-O", font_path, url], timeout=30)
-        if os.path.exists(font_path) and os.path.getsize(font_path) > 10000:
-            return font_path
-    except: pass
-    # fallback: خط DejaVu
-    return "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+        import arabic_reshaper
+        from bidi.algorithm import get_display
+        from PIL import Image, ImageDraw, ImageFont
+    except ImportError:
+        subprocess.run(
+            ["pip", "install", "arabic-reshaper", "python-bidi", "Pillow", "--quiet"],
+            timeout=60
+        )
 
-def split_title_lines(title, max_chars_per_line):
-    """
-    يقسّم العنوان على سطرين حسب عدد الحروف الفعلي — لا يتجاوز عرض الشريط
-    """
-    if len(title) <= max_chars_per_line:
-        return [title]
+def download_cairo_font():
+    """تحميل خط Cairo Bold"""
+    font_path = "/tmp/CairoBold.ttf"
+    if os.path.exists(font_path) and os.path.getsize(font_path) > 50000:
+        return font_path
+    urls = [
+        "https://github.com/google/fonts/raw/main/ofl/cairo/static/Cairo-Bold.ttf",
+        "https://fonts.gstatic.com/s/cairo/v28/SLXgc1nY6HkvalIvTp0qWg.ttf",
+    ]
+    for url in urls:
+        try:
+            subprocess.run(["wget", "-q", "-O", font_path, url], timeout=30)
+            if os.path.exists(font_path) and os.path.getsize(font_path) > 50000:
+                print("✅ Cairo font downloaded")
+                return font_path
+        except: pass
+    for p in [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+    ]:
+        if os.path.exists(p): return p
+    return None
 
-    words = title.split()
-    lines = []
-    current = ""
+def render_title_image(text, color_hex, video_w, video_h, font_path):
+    """
+    يرسم PNG شفاف يحتوي الشريط الملون والعنوان العربي الصحيح بخط BOLD
+    """
+    import arabic_reshaper
+    from bidi.algorithm import get_display
+    from PIL import Image, ImageDraw, ImageFont
+
+    # ── تحويل اللون ───────────────────────────────────────────
+    hex_color = color_hex.split("@")[0].replace("0x", "").replace("#", "")
+    alpha_val = int(float(color_hex.split("@")[1]) * 255) if "@" in color_hex else 217
+    r_c = int(hex_color[0:2], 16)
+    g_c = int(hex_color[2:4], 16)
+    b_c = int(hex_color[4:6], 16)
+    bg_color = (r_c, g_c, b_c, alpha_val)
+
+    # ── أبعاد الشريط ──────────────────────────────────────────
+    pad_h     = int(video_w * 0.05)
+    pad_v     = int(video_h * 0.022)
+    bar_w     = video_w - int(video_w * 0.08)
+    font_size = int(video_h * 0.044)
+    usable_w  = bar_w - 2 * pad_h
+
+    # ── تحميل الخط ────────────────────────────────────────────
+    try:
+        font = ImageFont.truetype(font_path, font_size)
+    except:
+        font = ImageFont.load_default()
+
+    def get_text_width(t):
+        dummy_img = Image.new("RGBA", (1, 1))
+        d = ImageDraw.Draw(dummy_img)
+        bbox = d.textbbox((0, 0), t, font=font)
+        return bbox[2] - bbox[0]
+
+    def to_bidi(t):
+        return get_display(arabic_reshaper.reshape(t))
+
+    # ── تقسيم النص إلى سطرين بناءً على عرض حقيقي ────────────
+    words = text.split()
+    lines_raw = []
+    current_words = []
+
     for word in words:
-        test = (current + " " + word).strip()
-        if len(test) <= max_chars_per_line:
-            current = test
+        test_words = current_words + [word]
+        test_str = " ".join(test_words)
+        if get_text_width(to_bidi(test_str)) <= usable_w:
+            current_words = test_words
         else:
-            if current:
-                lines.append(current)
-            current = word
-            if len(lines) == 1:  # نكتفي بسطرين فقط
-                # باقي الكلمات في السطر الثاني مهما كان
-                remaining = " ".join(words[words.index(word):])
-                # قطّع إذا طال جداً
-                lines.append(remaining[:max_chars_per_line])
-                current = ""
+            if current_words:
+                lines_raw.append(" ".join(current_words))
+            current_words = [word]
+            # إذا وصلنا للسطر الثاني، نضع الباقي كله فيه
+            if len(lines_raw) >= 1:
+                remaining = " ".join([word] + words[words.index(word)+1:])
+                # قطّع إذا تجاوز العرض
+                if get_text_width(to_bidi(remaining)) > usable_w:
+                    # قطّع بالحروف
+                    cut = ""
+                    for ch in remaining:
+                        if get_text_width(to_bidi(cut + ch)) <= usable_w:
+                            cut += ch
+                        else:
+                            break
+                    remaining = cut
+                lines_raw.append(remaining)
+                current_words = []
                 break
-    if current:
-        lines.append(current)
-    return lines[:2]  # أقصاه سطران
+
+    if current_words:
+        lines_raw.append(" ".join(current_words))
+
+    lines_raw = lines_raw[:2]
+    lines_bidi = [to_bidi(l) for l in lines_raw]
+
+    # ── حساب ارتفاع الشريط ────────────────────────────────────
+    line_h = int(font_size * 1.55)
+    bar_h  = len(lines_bidi) * line_h + 2 * pad_v
+
+    # ── رسم الصورة ────────────────────────────────────────────
+    img  = Image.new("RGBA", (bar_w, bar_h), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    draw.rectangle([0, 0, bar_w - 1, bar_h - 1], fill=bg_color)
+
+    for i, line in enumerate(lines_bidi):
+        bbox = draw.textbbox((0, 0), line, font=font)
+        tw = bbox[2] - bbox[0]
+        tx = (bar_w - tw) // 2
+        ty = pad_v + i * line_h
+        # ظل خفيف للنص
+        draw.text((tx + 2, ty + 2), line, font=font, fill=(0, 0, 0, 120))
+        # النص الأبيض
+        draw.text((tx, ty), line, font=font, fill=(255, 255, 255, 255))
+
+    out_png = "/tmp/title_overlay.png"
+    img.save(out_png, "PNG")
+
+    bar_x = (video_w - bar_w) // 2
+    bar_y = video_h - bar_h - int(video_h * 0.16)
+
+    return out_png, bar_x, bar_y, bar_h
 
 def add_title_overlay(main, title, color, out, w, h):
     print("✍️ إضافة العنوان على الفيديو...")
 
-    # ── تنظيف العنوان وحذف اسم الصفحة ──────────────────────────
+    ensure_deps()
     clean = clean_title(title)
+    font_path = download_cairo_font()
 
-    # ── تحميل خط Cairo ───────────────────────────────────────────
-    font = download_cairo_font()
+    try:
+        png, bar_x, bar_y, bar_h = render_title_image(clean, color, w, h, font_path)
+    except Exception as e:
+        print(f"⚠️ فشل رسم العنوان: {e}")
+        import traceback; traceback.print_exc()
+        subprocess.run(["cp", main, out])
+        return os.path.exists(out)
 
-    # ── الأبعاد ──────────────────────────────────────────────────
-    font_size     = int(h * 0.038)          # حجم الخط
-    line_spacing  = int(font_size * 1.5)    # مسافة بين السطرين
-    pad_v         = int(h * 0.022)          # حشوة عمودية
-    bar_w         = w - int(w * 0.08)       # عرض الشريط 92% من الفيديو
-    bar_x         = (w - bar_w) // 2        # توسيط أفقي
+    show_end = 10.0
+    fade_dur = 0.6
 
-    # ── تقدير عدد الحروف في السطر بناءً على عرض الشريط والخط ────
-    # تقدير تجريبي: حرف عربي ≈ font_size * 0.6 عرضاً
-    max_chars = int(bar_w / (font_size * 0.62))
-
-    # ── تقسيم السطور ─────────────────────────────────────────────
-    lines = split_title_lines(clean, max_chars)
-    num_lines = len(lines)
-
-    bar_h  = num_lines * line_spacing + 2 * pad_v
-    # ── موضع الشريط: أسفل الفيديو بهامش 16% ─────────────────────
-    bar_y  = h - bar_h - int(h * 0.16)
-
-    # ── مواضع النص ───────────────────────────────────────────────
-    text_y1 = bar_y + pad_v
-    text_y2 = text_y1 + line_spacing
-
-    # ── تأثيرات الظهور والاختفاء (fade in 0.6s — fade out 0.6s) ──
-    # الشريط يظهر عند t=0 ويختفي عند t=10
-    # alpha = fade_in * fade_out
-    fade_dur   = 0.6   # مدة التأثير بالثواني
-    show_end   = 10.0  # وقت الاختفاء
-
-    # alpha expression للـ drawbox (يدعم alpha في اللون مباشرة)
-    # نستخدم overlay شفاف بدل drawbox لدعم الـ fade
-    # الحل: نبني الشريط كـ overlay منفصل مع alphamerge
-
-    # ── filter_complex بتأثير fade باستخدام format+colorchannelmixer ─
-    # نرسم الشريط على صورة سوداء ثم نعمل overlay مع alpha متحرك
-
+    # ── fade in / fade out ────────────────────────────────────
     alpha_expr = (
-        f"if(lt(t,{fade_dur}),t/{fade_dur},"          # fade in
-        f"if(gt(t,{show_end - fade_dur}),"
-        f"({show_end}-t)/{fade_dur},1))"              # fade out
+        f"if(lt(t,{fade_dur}),t/{fade_dur},"
+        f"if(gt(t,{show_end - fade_dur}),({show_end}-t)/{fade_dur},1))"
     )
-    # نضع 0 خارج النافذة [0, show_end]
     alpha_full = f"if(between(t,0,{show_end}),{alpha_expr},0)"
 
-    # لون الشريط بدون alpha (سنتحكم في alpha بشكل منفصل)
-    color_solid = color.split("@")[0]  # مثلاً 0x1a237e
-
-    fc_parts = []
-
-    # 1) صورة ملونة بحجم الشريط
-    fc_parts.append(
-        f"color=c={color_solid}:s={bar_w}x{bar_h}[bar_base]"
+    fc = (
+        f"[1:v]format=yuva420p,"
+        f"colorchannelmixer=aa='{alpha_full}'[ovr];"
+        f"[0:v][ovr]overlay=x={bar_x}:y={bar_y}[v]"
     )
-
-    # 2) كتابة النص على الشريط
-    txt1 = lines[0].replace("'", "\\'")
-    fc_parts.append(
-        f"[bar_base]drawtext=text='{txt1}'"
-        f":fontfile={font}:fontsize={font_size}"
-        f":fontcolor=white:x=(w-text_w)/2:y={pad_v}"
-        + (
-            f",drawtext=text='{lines[1].replace(chr(39), chr(92)+chr(39))}'"
-            f":fontfile={font}:fontsize={font_size}"
-            f":fontcolor=white:x=(w-text_w)/2:y={pad_v + line_spacing}"
-            if num_lines == 2 else ""
-        )
-        + "[bar_txt]"
-    )
-
-    # 3) ضع الشريط على الفيديو مع alpha متحرك
-    fc_parts.append(
-        f"[bar_txt]format=yuva420p[bar_rgba]"
-    )
-    fc_parts.append(
-        f"[bar_rgba]colorchannelmixer=aa={alpha_full}[bar_alpha]"
-    )
-    fc_parts.append(
-        f"[0:v][bar_alpha]overlay=x={bar_x}:y={bar_y}[v]"
-    )
-
-    fc = ";".join(fc_parts)
 
     result = subprocess.run(
-        ["ffmpeg", "-y", "-i", main, "-filter_complex", fc,
+        ["ffmpeg", "-y",
+         "-i", main,
+         "-loop", "1", "-i", png,
+         "-filter_complex", fc,
          "-map", "[v]", "-map", "0:a",
-         "-c:v", "libx264", "-c:a", "copy", "-preset", "fast", out],
+         "-c:v", "libx264", "-c:a", "copy",
+         "-preset", "fast", "-shortest", out],
         capture_output=True, text=True, timeout=600
     )
 
     if not os.path.exists(out):
-        print(f"⚠️ ffmpeg error: {result.stderr[-500:]}")
-        # fallback بسيط بدون fade
-        fc_simple = (
-            f"[0:v]drawbox=x={bar_x}:y={bar_y}:w={bar_w}:h={bar_h}"
-            f":color={color}:t=fill:enable='between(t,0,{show_end})'"
-            f",drawtext=text='{lines[0].replace(chr(39),chr(32))}'"
-            f":fontfile={font}:fontsize={font_size}:fontcolor=white"
-            f":x=(w-text_w)/2:y={text_y1}:enable='between(t,0,{show_end})'"
+        print(f"⚠️ ffmpeg fade error, trying simple overlay...")
+        print(result.stderr[-600:])
+        # fallback بدون fade
+        fc2 = (
+            f"[1:v]format=yuva420p[ovr];"
+            f"[0:v][ovr]overlay=x={bar_x}:y={bar_y}:enable='between(t,0,{show_end})'[v]"
         )
-        if num_lines == 2:
-            fc_simple += (
-                f",drawtext=text='{lines[1].replace(chr(39),chr(32))}'"
-                f":fontfile={font}:fontsize={font_size}:fontcolor=white"
-                f":x=(w-text_w)/2:y={text_y2}:enable='between(t,0,{show_end})'"
-            )
-        fc_simple += "[v]"
         subprocess.run(
-            ["ffmpeg", "-y", "-i", main, "-filter_complex", fc_simple,
+            ["ffmpeg", "-y",
+             "-i", main,
+             "-loop", "1", "-i", png,
+             "-filter_complex", fc2,
              "-map", "[v]", "-map", "0:a",
-             "-c:v", "libx264", "-c:a", "copy", "-preset", "fast", out],
+             "-c:v", "libx264", "-c:a", "copy",
+             "-preset", "fast", "-shortest", out],
             capture_output=True, text=True, timeout=600
         )
 
@@ -365,7 +392,7 @@ def cleanup(names):
                   f"/tmp/outro_{name}.mp4"]:
             if os.path.exists(f): os.remove(f)
     for f in ["/tmp/main.mp4", "/tmp/concat.txt", "/tmp/sel.py",
-              "/tmp/Cairo-Bold.ttf"]:
+              "/tmp/CairoBold.ttf", "/tmp/title_overlay.png"]:
         if os.path.exists(f): os.remove(f)
 
 # ── التنفيذ الرئيسي ──────────────────────────────────────
