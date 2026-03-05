@@ -133,61 +133,29 @@ def add_title_overlay(main, title, color, out, w, h):
         subprocess.run(["cp", main, out])
         return os.path.exists(out)
 
-    # ── توقيتات الحركة ────────────────────────────────────────
-    show_start   = 2.0   # يظهر بعد ثانيتين
-    fade_in_dur  = 0.7   # مدة الدخول
-    show_end     = 12.0  # يختفي عند 12 ثانية
-    fade_out_dur = 0.7   # مدة الخروج
-    slide_in_px  = 45    # ارتفاع الانزلاق عند الدخول (من الأسفل للأعلى)
-    slide_out_px = 22    # ارتفاع الانزلاق عند الخروج (للأسفل)
+    # ── توقيتات ───────────────────────────────────────────────
+    show_start   = 2.0    # يظهر بعد ثانيتين
+    fade_in_dur  = 0.8    # مدة الـ fade-in
+    show_end     = 12.0   # يختفي عند 12 ثانية
+    fade_out_dur = 0.8    # مدة الـ fade-out
+    fout_st      = show_end - fade_out_dur   # 11.2
 
-    fin_end  = show_start + fade_in_dur   # 2.7
-    fout_st  = show_end - fade_out_dur    # 11.3
-
-    # ── Ease-Out: alpha = 2p - p² ─────────────────────────────
-    # p_in  = التقدم من 0→1 خلال الدخول
-    # p_out = التقدم من 0→1 خلال الخروج
-    p_in  = f"((t-{show_start})/{fade_in_dur})"
-    p_out = f"(({show_end}-t)/{fade_out_dur})"
-
-    ease_in  = f"(2*{p_in}-{p_in}*{p_in})"
-    ease_out_expr = f"(2*{p_out}-{p_out}*{p_out})"
-
-    # ── معادلة Alpha ──────────────────────────────────────────
-    alpha_expr = (
-        f"if(lt(t,{show_start}),0,"
-        f"if(lt(t,{fin_end}),{ease_in},"
-        f"if(lt(t,{fout_st}),1,"
-        f"if(lt(t,{show_end}),{ease_out_expr},"
-        f"0))))"
-    )
-
-    # ── معادلة Y (Slide up دخول، Slide down خروج) ────────────
-    y_start  = bar_y + slide_in_px   # موضع البداية (أسفل)
-    y_end    = bar_y + slide_out_px  # موضع النهاية (أسفل قليلاً)
-
-    # خلال الدخول: ينزلق من y_start إلى bar_y بـ ease-out
-    y_in  = f"({bar_y}+{slide_in_px}*(1-{ease_in}))"
-    # خلال الخروج: ينزلق من bar_y إلى y_end
-    y_out = f"({bar_y}+{slide_out_px}*(1-{ease_out_expr}))"
-
-    y_expr = (
-        f"if(lt(t,{show_start}),{y_start},"
-        f"if(lt(t,{fin_end}),{y_in},"
-        f"if(lt(t,{fout_st}),{bar_y},"
-        f"if(lt(t,{show_end}),{y_out},"
-        f"{y_end}))))"
-    )
-
-    # ── filter_complex: alpha + slide ─────────────────────────
+    # ── filter_complex ─────────────────────────────────────────
+    # نستخدم فلتر fade المدمج في ffmpeg مع alpha=1
+    # fade=t=in  → يظهر تدريجياً ابتداءً من show_start
+    # fade=t=out → يختفي تدريجياً ابتداءً من fout_st
+    # enable='between' → يخفي الـ overlay خارج النافذة الزمنية
     fc = (
         f"[1:v]format=yuva420p,"
-        f"colorchannelmixer=aa='{alpha_expr}'[ovr];"
-        f"[0:v][ovr]overlay=x={bar_x}:y='{y_expr}'[v]"
+        f"fade=t=in:st={show_start}:d={fade_in_dur}:alpha=1,"
+        f"fade=t=out:st={fout_st}:d={fade_out_dur}:alpha=1[ovr];"
+        f"[0:v][ovr]overlay=x={bar_x}:y={bar_y}[v]"
     )
 
     result = subprocess.run(
-        ["ffmpeg", "-y", "-i", main, "-loop", "1", "-i", png,
+        ["ffmpeg", "-y",
+         "-i", main,
+         "-loop", "1", "-t", str(show_end + 1), "-i", png,
          "-filter_complex", fc,
          "-map", "[v]", "-map", "0:a",
          "-c:v", "libx264", "-c:a", "copy",
@@ -196,23 +164,18 @@ def add_title_overlay(main, title, color, out, w, h):
     )
 
     if not os.path.exists(out):
-        print("⚠️ animated overlay failed, trying simple fade fallback...")
+        print("⚠️ fade overlay failed, trying enable-only fallback...")
         print(result.stderr[-600:])
-        # fallback: fade بسيط بدون حركة
-        alpha_simple = (
-            f"if(lt(t,{show_start}),0,"
-            f"if(lt(t,{fin_end}),(t-{show_start})/{fade_in_dur},"
-            f"if(lt(t,{fout_st}),1,"
-            f"if(lt(t,{show_end}),({show_end}-t)/{fade_out_dur},"
-            f"0))))"
-        )
+        # fallback: ظهور مباشر بدون تأثير
         fc2 = (
-            f"[1:v]format=yuva420p,"
-            f"colorchannelmixer=aa='{alpha_simple}'[ovr];"
-            f"[0:v][ovr]overlay=x={bar_x}:y={bar_y}[v]"
+            f"[1:v]format=yuva420p[ovr];"
+            f"[0:v][ovr]overlay=x={bar_x}:y={bar_y}"
+            f":enable='between(t,{show_start},{show_end})'[v]"
         )
         subprocess.run(
-            ["ffmpeg", "-y", "-i", main, "-loop", "1", "-i", png,
+            ["ffmpeg", "-y",
+             "-i", main,
+             "-loop", "1", "-t", str(show_end + 1), "-i", png,
              "-filter_complex", fc2,
              "-map", "[v]", "-map", "0:a",
              "-c:v", "libx264", "-c:a", "copy",
