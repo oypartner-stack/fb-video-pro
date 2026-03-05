@@ -17,7 +17,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg
-          pip install yt-dlp cloudinary requests selenium webdriver-manager
+          pip install yt-dlp cloudinary requests selenium webdriver-manager arabic-reshaper python-bidi Pillow
 
       - name: Write cookies file
         run: |
@@ -34,7 +34,7 @@ jobs:
       - name: Save processed IDs
         run: |
           git config --global user.name "github-actions"
-          git config --global user.email "actions@github.com"
+          git config --global user.email "github-actions@github.com"
           git add processed_ids.json
           git diff --staged --quiet || git commit -m "Update IDs [skip ci]"
           git push
