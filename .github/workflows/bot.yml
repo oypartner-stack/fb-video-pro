@@ -19,6 +19,16 @@ jobs:
           sudo apt-get install -y ffmpeg fonts-hosny-amiri
           pip install yt-dlp cloudinary requests selenium webdriver-manager Pillow
 
+      - name: Download Amiri font (backup if apt fails)
+        run: |
+          if [ ! -f "Amiri-Bold.ttf" ]; then
+            wget -q -O Amiri-Bold.ttf \
+              "https://github.com/aliftype/amiri/releases/download/1.000/Amiri-1.000.zip" \
+              || wget -q -O Amiri-Bold.ttf \
+              "https://raw.githubusercontent.com/aliftype/amiri/main/fonts/Amiri-Bold.ttf" \
+              || echo "Amiri not downloaded, will use system font"
+          fi
+
       - name: Write cookies file
         run: |
           echo "${{ secrets.FB_COOKIES }}" > /tmp/cookies.txt
