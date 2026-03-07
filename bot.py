@@ -22,36 +22,56 @@ def load_processed_ids():
 def save_processed_ids(ids):
     with open(LAST_IDS_FILE, "w") as f: json.dump(ids[-100:], f)
 
-def clean_title(raw_title):
-    """يحذف اسم الصفحة — يكون بعد | أو — في النهاية"""
-    title = re.split(r'\s*[\|—–]\s*[^|—–]*$', raw_title)[0].strip()
-    title = re.sub(r"\s+", " ", title).strip()
-    return title or raw_title
+def clean_title(raw):
+    """
+    يحذف اسم الصفحة من العنوان مهما كان موضعه أو شكله:
+      "العنوان | اسم الصفحة"   → "العنوان"
+      "اسم الصفحة | العنوان"   → "العنوان"
+      "العنوان — اسم الصفحة"   → "العنوان"
+      "اسم الصفحة. العنوان"    → "العنوان"
+      "اسم الصفحة - العنوان"   → "العنوان"
+      "العنوان - اسم_لاتيني"   → "العنوان"
+    """
+    def has_arabic(t):
+        return any('\u0600' <= c <= '\u06ff' for c in t)
+
+    t = raw.strip()
+
+    # 1) اسم لاتيني في البداية + | → خذ ما بعد |
+    m = re.match(r'^[a-zA-Z0-9@._\s-]{1,30}\s*\|\s*(.+)$', t)
+    if m and has_arabic(m.group(1)):
+        t = m.group(1).strip()
+
+    # 2) قطع ما بعد | أو — أو – + اسم لاتيني في النهاية
+    t = re.split(r'\s*[\|—–]\s*[a-zA-Z0-9._\s@-]+$', t)[0].strip()
+
+    # 3) اسم لاتيني في البداية + نقطة أو - أو : → احذفه
+    t = re.sub(r'^[a-zA-Z0-9._@-]+\s*[.\-:]\s+', '', t).strip()
+
+    # 4) - اسم_لاتيني في النهاية بدون |
+    t = re.sub(r'\s+-\s+[a-zA-Z0-9._]+\s*$', '', t).strip()
+
+    # 5) تنظيف المسافات الزائدة
+    t = re.sub(r'\s+', ' ', t).strip()
+
+    return t if len(t) >= 3 else raw
 
 def get_font():
     """
     يعيد مسار أفضل خط عربي متاح.
     الأولوية: Montserrat-Arabic في المشروع ← DejaVu
     """
-    # 1) خط Montserrat-Arabic في نفس مجلد البوت
     local = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Montserrat-Arabic-Bold.ttf")
     if os.path.exists(local):
         print(f"✅ Font: Montserrat-Arabic-Bold (local)")
         return local
-
-    # 2) DejaVu احتياطي
     dv = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
     print(f"⚠️ Using fallback font: DejaVu")
     return dv
 
 def render_title_image(text, color_hex, video_w, video_h):
-    """
-    يرسم PNG شفاف: شريط ملون + عنوان عربي.
-    حجم الخط ثابت (38px على 1080px عرض) يتناسب مع عرض الفيديو.
-    """
     from PIL import Image, ImageDraw, ImageFont
 
-    # ── تحويل اللون ───────────────────────────────────────────
     hex_str   = color_hex.split("@")[0].replace("0x", "").replace("#", "")
     alpha_val = int(float(color_hex.split("@")[1]) * 255) if "@" in color_hex else 217
     bg_color  = (
@@ -61,9 +81,7 @@ def render_title_image(text, color_hex, video_w, video_h):
         alpha_val
     )
 
-    # ── أبعاد ─────────────────────────────────────────────────
-    # حجم الخط: 38px على فيديو 1080px عرض، يتناسب مع أي عرض آخر
-    font_size = max(20, int(video_w * 0.0352))   # 38/1080 ≈ 0.0352
+    font_size = max(20, int(video_w * 0.0352))
     pad_h     = int(video_w * 0.05)
     pad_v     = int(video_h * 0.018)
     bar_w     = video_w - int(video_w * 0.08)
@@ -75,7 +93,6 @@ def render_title_image(text, color_hex, video_w, video_h):
     except:
         font = ImageFont.load_default()
 
-    # ── حساب عرض النص ─────────────────────────────────────────
     dummy = Image.new("RGBA", (1, 1))
     draw0 = ImageDraw.Draw(dummy)
 
@@ -83,7 +100,6 @@ def render_title_image(text, color_hex, video_w, video_h):
         bb = draw0.textbbox((0, 0), t, font=font)
         return bb[2] - bb[0]
 
-    # ── تقسيم إلى سطور (بدون حد أقصى) ───────────────────────
     words = text.split()
     lines, current = [], []
     for word in words:
@@ -97,11 +113,9 @@ def render_title_image(text, color_hex, video_w, video_h):
     if current:
         lines.append(" ".join(current))
 
-    # ── ارتفاع الشريط ─────────────────────────────────────────
     line_h = int(font_size * 1.5)
     bar_h  = len(lines) * line_h + 2 * pad_v
 
-    # ── رسم الصورة ────────────────────────────────────────────
     img  = Image.new("RGBA", (bar_w, bar_h), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
     draw.rectangle([0, 0, bar_w - 1, bar_h - 1], fill=bg_color)
@@ -123,7 +137,8 @@ def render_title_image(text, color_hex, video_w, video_h):
 def add_title_overlay(main, title, color, out, w, h):
     print("✍️ إضافة العنوان على الفيديو...")
     clean = clean_title(title)
-    print(f"   العنوان: {clean}")
+    print(f"   العنوان الأصلي : {title[:70]}")
+    print(f"   العنوان المنظّف: {clean}")
 
     try:
         png, bar_x, bar_y = render_title_image(clean, color, w, h)
@@ -133,18 +148,12 @@ def add_title_overlay(main, title, color, out, w, h):
         subprocess.run(["cp", main, out])
         return os.path.exists(out)
 
-    # ── توقيتات ───────────────────────────────────────────────
-    show_start   = 2.0    # يظهر بعد ثانيتين
-    fade_in_dur  = 0.8    # مدة الـ fade-in
-    show_end     = 12.0   # يختفي عند 12 ثانية
-    fade_out_dur = 0.8    # مدة الـ fade-out
-    fout_st      = show_end - fade_out_dur   # 11.2
+    show_start   = 2.0
+    fade_in_dur  = 0.8
+    show_end     = 12.0
+    fade_out_dur = 0.8
+    fout_st      = show_end - fade_out_dur
 
-    # ── filter_complex ─────────────────────────────────────────
-    # نستخدم فلتر fade المدمج في ffmpeg مع alpha=1
-    # fade=t=in  → يظهر تدريجياً ابتداءً من show_start
-    # fade=t=out → يختفي تدريجياً ابتداءً من fout_st
-    # enable='between' → يخفي الـ overlay خارج النافذة الزمنية
     fc = (
         f"[1:v]format=yuva420p,"
         f"fade=t=in:st={show_start}:d={fade_in_dur}:alpha=1,"
@@ -166,7 +175,6 @@ def add_title_overlay(main, title, color, out, w, h):
     if not os.path.exists(out):
         print("⚠️ fade overlay failed, trying enable-only fallback...")
         print(result.stderr[-600:])
-        # fallback: ظهور مباشر بدون تأثير
         fc2 = (
             f"[1:v]format=yuva420p[ovr];"
             f"[0:v][ovr]overlay=x={bar_x}:y={bar_y}"
@@ -342,25 +350,15 @@ print(json.dumps(videos[:10]))
     return videos
 
 def scale_to_target(src, out, target_w=1080, target_h=1920):
-    """
-    يحجّم الفيديو ليملأ target_w × target_h بالكامل بدون أشرطة سوداء.
-    - إذا الفيديو أصغر  → Zoom In  (تكبير + قص الزائد من المنتصف)
-    - إذا الفيديو أكبر  → De-Zoom  (تصغير + قص الزائد من المنتصف)
-    النتيجة دائماً: الإطار ممتلئ 100% بدون أي فراغ.
-    """
-    print(f"📐 تحجيم الفيديو إلى {target_w}×{target_h} (Zoom/De-Zoom)...")
-    # scale: يكبّر/يصغّر حتى يغطي الإطار كاملاً (force_original_aspect_ratio=increase)
-    # crop:  يقص الزائد من المنتصف
+    print(f"📐 تحجيم الفيديو إلى {target_w}×{target_h}...")
     vf = (
         f"scale={target_w}:{target_h}:force_original_aspect_ratio=increase,"
         f"crop={target_w}:{target_h},"
         f"setsar=1"
     )
     r = subprocess.run(
-        ["ffmpeg", "-y", "-i", src,
-         "-vf", vf,
-         "-c:v", "libx264", "-c:a", "aac",
-         "-preset", "fast", out],
+        ["ffmpeg", "-y", "-i", src, "-vf", vf,
+         "-c:v", "libx264", "-c:a", "aac", "-preset", "fast", out],
         capture_output=True, text=True, timeout=600
     )
     if os.path.exists(out):
@@ -399,22 +397,18 @@ else:
     print(f"🆕 {new_video['title'][:60]}")
     if not download_video(new_video["url"]): exit(1)
 
-    # ── تحجيم الفيديو إلى المقاس المستهدف ─────────────────────
     src_w, src_h, dur = get_video_info("/tmp/main.mp4")
     print(f"  📏 المقاس الأصلي: {src_w}×{src_h}")
 
     if src_w == TARGET_W and src_h == TARGET_H:
-        # مقاس مثالي، لا حاجة لتحجيم
         main_ready = "/tmp/main.mp4"
         print(f"  ✅ المقاس مطابق، لا حاجة لتحجيم")
     else:
         main_ready = "/tmp/main_scaled.mp4"
         if not scale_to_target("/tmp/main.mp4", main_ready, TARGET_W, TARGET_H):
-            main_ready = "/tmp/main.mp4"   # fallback: استخدم الأصلي
+            main_ready = "/tmp/main.mp4"
 
-    # ── الأبعاد النهائية دائماً هي الهدف ──────────────────────
     w, h = TARGET_W, TARGET_H
-
     names = []
     for pub in config["publishers"]:
         try:
