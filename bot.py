@@ -416,11 +416,13 @@ else:
             main_ready = "/tmp/main.mp4"
 
     w, h = TARGET_W, TARGET_H
+    video_title = clean_title(new_video["title"])
+    print(f"  العنوان المنظف: {video_title}")
     names = []
     for pub in config["publishers"]:
         try:
-            final = process_for_publisher(main_ready, pub, w, h, dur, new_video["title"])
-            upload_and_send(final, new_video["title"], pub["name"])
+            final = process_for_publisher(main_ready, pub, w, h, dur, video_title)
+            upload_and_send(final, video_title, pub["name"])
             names.append(pub["name"])
         except Exception as e: print(f"❌ {pub['name']}: {e}")
     processed_ids.append(new_video["id"])
